@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Anki 插件运行时生成(用户本地配置/状态,非源码)
+meta.json
+
+# 编辑器/系统(含机器相关的绝对路径)
+.vscode/
+.DS_Store

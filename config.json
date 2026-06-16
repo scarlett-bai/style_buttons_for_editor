@@ -1,0 +1,26 @@
+{
+    "global": {
+        "enabled": true,
+        "default_tag": "span",
+        "button_overflow_mode": "dropdown",
+        "button_overflow_threshold": 8,
+        "show_css_preview_tooltip": true,
+        "show_button_style_preview": true,
+        "ignored_classes": [
+            "card",
+            "card1",
+            "card2",
+            "card3",
+            "cloze",
+            "nightMode",
+            "night_mode",
+            "replay-button",
+            "typepad",
+            "typeBad",
+            "typeGood",
+            "typeMissed"
+        ],
+        "language": "auto"
+    },
+    "note_types": {}
+}
