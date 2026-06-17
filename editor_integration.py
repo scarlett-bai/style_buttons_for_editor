@@ -20,6 +20,7 @@ from .i18n import js_strings, tr
 from .log import log
 
 _SAVE_ORDER_PREFIX = "sbfe_save_order:"
+_LOG_PREFIX = "sbfe_log:"
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 _RUNTIME_PATH = os.path.join(_WEB_DIR, "runtime.js")
@@ -117,6 +118,7 @@ def _build_payload(editor: Editor) -> dict[str, Any]:
         "overflowMode": g.get("button_overflow_mode", "dropdown"),
         "overflowThreshold": g.get("button_overflow_threshold", 8),
         "showPreview": g.get("show_button_style_preview", True),
+        "debug": g.get("debug", False),
         "i18n": js_strings(),
     }
 
@@ -163,19 +165,34 @@ def _save_order(note_type_name: str, ordered_classes: list[str]) -> None:
 
 
 def _on_js_message(handled, message: str, context):
-    """接收前端拖拽排序后的保存请求(JS -> Python)。"""
+    """接收前端消息(JS -> Python):拖拽排序保存、诊断日志。"""
     if not isinstance(context, Editor):
         return handled
-    if not isinstance(message, str) or not message.startswith(_SAVE_ORDER_PREFIX):
+    if not isinstance(message, str):
         return handled
-    try:
-        import json as _json
 
-        data = _json.loads(message[len(_SAVE_ORDER_PREFIX):])
-        _save_order(data.get("noteType", ""), data.get("order", []))
-    except Exception as exc:
-        log(f"保存按钮排序失败: {exc}")
-    return (True, None)
+    if message.startswith(_SAVE_ORDER_PREFIX):
+        try:
+            import json as _json
+
+            data = _json.loads(message[len(_SAVE_ORDER_PREFIX):])
+            _save_order(data.get("noteType", ""), data.get("order", []))
+        except Exception as exc:
+            log(f"保存按钮排序失败: {exc}")
+        return (True, None)
+
+    if message.startswith(_LOG_PREFIX):
+        detail = message[len(_LOG_PREFIX):]
+        log(detail)
+        try:
+            from aqt.utils import tooltip
+
+            tooltip(f"Style Buttons: {detail}", period=4000)
+        except Exception:
+            pass
+        return (True, None)
+
+    return handled
 
 
 def register() -> None:

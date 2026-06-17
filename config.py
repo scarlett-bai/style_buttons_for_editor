@@ -64,6 +64,7 @@ DEFAULT_GLOBAL: dict[str, Any] = {
         "typeMissed",
     ],
     "language": "auto",
+    "debug": False,
 }
 
 _VALID_OVERFLOW_MODES = {"dropdown", "newline", "scroll"}

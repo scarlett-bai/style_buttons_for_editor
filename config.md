@@ -14,6 +14,7 @@
 | `show_button_style_preview` | 布尔 | `true` | 是否让按钮本身应用对应 CSS 的安全属性（如加粗、颜色）作为预览 |
 | `ignored_classes` | 字符串数组 | 见下 | 全局忽略、不生成按钮的 class 列表 |
 | `language` | 字符串 | `"auto"` | 界面语言：`auto`（跟随 Anki）/ `zh` / `en` |
+| `debug` | 布尔 | `false` | 调试模式。开启后，样式应用失败时会把原因写入日志，并在编辑器内弹出提示（toast），便于排查"标签没添加上"等问题 |
 
 默认忽略列表：`card, card1, card2, card3, cloze, nightMode, night_mode, replay-button, typepad, typeBad, typeGood, typeMissed`
 

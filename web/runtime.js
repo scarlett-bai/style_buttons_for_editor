@@ -33,6 +33,20 @@
     ns.noteType = ""; // 当前笔记类型名,用于保存排序
     ns._payload = null; // 最近一次渲染数据,拖拽后本地重排复用
     ns._dragThreshold = 5; // 进入拖拽的位移阈值(px)
+    ns.debug = false; // 调试模式:失败时回传原因给 Python 记日志并弹 toast
+
+    // ---- 诊断 -----------------------------------------------------------
+
+    function report(reason) {
+        try {
+            console.error("[StyleButtons] " + reason);
+            if (ns.debug && typeof window.pycmd === "function") {
+                window.pycmd("sbfe_log:" + reason);
+            }
+        } catch (e) {
+            /* 诊断本身绝不抛错 */
+        }
+    }
 
     // ---- 选区与可编辑区 -------------------------------------------------
 
@@ -44,28 +58,78 @@
         return el;
     }
 
-    function getSelectionInfo() {
-        const active = deepActiveElement();
-        if (!active) return null;
-        const root = active.getRootNode();
-        const sel = root && root.getSelection ? root.getSelection() : document.getSelection();
-        if (!sel || sel.rangeCount === 0) return null;
-
-        let editable = active;
-        while (
-            editable &&
-            !(editable.nodeType === 1 && editable.getAttribute && editable.getAttribute("contenteditable") !== null)
-        ) {
-            editable = editable.parentNode;
+    // 从 node 向上找到最近的可编辑根(anki-editable 或 contenteditable 元素)
+    function closestEditable(node) {
+        let n = node;
+        if (n && n.nodeType === 3) n = n.parentNode;
+        while (n) {
+            if (
+                n.nodeType === 1 &&
+                (n.tagName === "ANKI-EDITABLE" ||
+                    (n.getAttribute && n.getAttribute("contenteditable") !== null))
+            ) {
+                return n;
+            }
+            n = n.parentNode;
         }
-        if (!editable) editable = active;
+        return null;
+    }
 
-        // 克隆 range,使其在选区/焦点变化后仍可用(供 mousedown 时捕获、应用时恢复)
-        return {
-            sel: sel,
-            range: sel.getRangeAt(sel.rangeCount - 1).cloneRange(),
-            editable: editable,
-        };
+    // 穿透 shadow DOM 收集所有富文本可编辑区
+    function collectEditables() {
+        const out = [];
+        const seen = new Set();
+        function walk(root) {
+            let nodes;
+            try {
+                nodes = root.querySelectorAll("*");
+            } catch (e) {
+                return;
+            }
+            for (let i = 0; i < nodes.length; i++) {
+                const el = nodes[i];
+                if (el.tagName === "ANKI-EDITABLE" && !seen.has(el)) {
+                    seen.add(el);
+                    out.push(el);
+                }
+                if (el.shadowRoot) walk(el.shadowRoot);
+            }
+        }
+        walk(document);
+        return out;
+    }
+
+    // 返回当前真正持有选区的字段及其选区(克隆 range 以便捕获/恢复)。
+    // 先走 deepActiveElement 快路径,失败则穿透 shadow DOM 扫描所有可编辑区,
+    // 找到选区锚点确实落在其中的那个 —— 解决“同一行有时取不到选区”的不稳定问题。
+    function getSelectionInfo() {
+        // 1) 快路径
+        const active = deepActiveElement();
+        if (active) {
+            const root = active.getRootNode();
+            const sel = root && root.getSelection ? root.getSelection() : null;
+            if (sel && sel.rangeCount) {
+                const r = sel.getRangeAt(sel.rangeCount - 1);
+                const ed = closestEditable(r.commonAncestorContainer) || closestEditable(active);
+                if (ed && (ed.contains(r.commonAncestorContainer) || ed === r.commonAncestorContainer)) {
+                    return { sel: sel, range: r.cloneRange(), editable: ed };
+                }
+            }
+        }
+        // 2) 健壮扫描
+        const eds = collectEditables();
+        for (let i = 0; i < eds.length; i++) {
+            const ed = eds[i];
+            const root = ed.getRootNode();
+            const sel = root && root.getSelection ? root.getSelection() : null;
+            if (sel && sel.rangeCount) {
+                const r = sel.getRangeAt(sel.rangeCount - 1);
+                if (ed.contains(r.commonAncestorContainer) || ed === r.commonAncestorContainer) {
+                    return { sel: sel, range: r.cloneRange(), editable: ed };
+                }
+            }
+        }
+        return null;
     }
 
     function escapeAttr(value) {
@@ -151,24 +215,55 @@
     // 而是直接对捕获到的 DOM 选区执行 document.execCommand("insertHTML")
     // —— 这正是 Anki 内部 x6 的底层机制,且会正确触发字段保存。
 
+    // 手动用 DOM 包裹选区(execCommand 失败时的兜底),并通知 Anki 保存
+    function manualSurround(range, tag, className, editable) {
+        try {
+            const el = document.createElement(tag);
+            el.className = className;
+            el.appendChild(range.extractContents());
+            range.insertNode(el);
+            const sel = rootSelection(editable);
+            const nr = document.createRange();
+            nr.selectNodeContents(el);
+            sel.removeAllRanges();
+            sel.addRange(nr);
+            // 通知编辑器保存(优先 Anki 全局 triggerChanges,否则派发 input 事件)
+            if (typeof window.triggerChanges === "function") {
+                window.triggerChanges();
+            } else if (editable.dispatchEvent) {
+                editable.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true }));
+            }
+            return true;
+        } catch (e) {
+            report("manualSurround 失败: " + e);
+            return false;
+        }
+    }
+
     function applyWithInfo(spec, info) {
         try {
-            if (!info || !info.editable) return;
+            if (!info || !info.editable) {
+                report("apply 失败:未捕获到选区(字段可能未聚焦)class=" + (spec && spec.name));
+                return;
+            }
 
             // 重新聚焦字段并恢复捕获到的选区(防止点击/重渲染导致焦点漂移)
             try {
                 if (info.editable.focus) info.editable.focus();
-                const sel = rootSelection(info.editable);
-                if (sel && info.range) {
-                    sel.removeAllRanges();
-                    sel.addRange(info.range);
+                const s = rootSelection(info.editable);
+                if (s && info.range) {
+                    s.removeAllRanges();
+                    s.addRange(info.range);
                 }
             } catch (e) {
-                /* 恢复失败则尽力而为 */
+                report("恢复选区失败: " + e);
             }
 
             const sel = rootSelection(info.editable);
-            if (!sel || sel.rangeCount === 0) return;
+            if (!sel || sel.rangeCount === 0) {
+                report("apply 失败:选区丢失 class=" + spec.name);
+                return;
+            }
             const range = sel.getRangeAt(sel.rangeCount - 1);
 
             const wrapper = findWrapper(range, spec.name, info.editable);
@@ -180,13 +275,20 @@
             const tag = spec.tag || "span";
             if (range.collapsed) {
                 insertEmpty(info, tag, spec.name);
-            } else {
-                const open = "<" + tag + ' class="' + escapeAttr(spec.name) + '">';
-                const close = "</" + tag + ">";
-                document.execCommand("insertHTML", false, open + selectedHtml(range) + close);
+                return;
+            }
+
+            const open = "<" + tag + ' class="' + escapeAttr(spec.name) + '">';
+            const close = "</" + tag + ">";
+            const html = open + selectedHtml(range) + close;
+            const ok = document.execCommand("insertHTML", false, html);
+            if (!ok) {
+                report("execCommand(insertHTML) 返回 false,改用 DOM 兜底 class=" + spec.name);
+                // 兜底前需用当前 range 的克隆(execCommand 可能已改动选区)
+                manualSurround(range.cloneRange(), tag, spec.name, info.editable);
             }
         } catch (e) {
-            console.error("[StyleButtons] apply failed", e);
+            report("apply 异常: " + e);
         }
     }
 
@@ -480,6 +582,7 @@
 
             ns.i18n = (payload && payload.i18n) || {};
             ns.noteType = (payload && payload.noteType) || "";
+            ns.debug = !!(payload && payload.debug);
             ns._payload = payload || null;
 
             const classes = (payload && payload.classes) || [];

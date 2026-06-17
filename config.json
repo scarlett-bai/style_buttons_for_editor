@@ -20,7 +20,8 @@
             "typeGood",
             "typeMissed"
         ],
-        "language": "auto"
+        "language": "auto",
+        "debug": false
     },
     "note_types": {}
 }
